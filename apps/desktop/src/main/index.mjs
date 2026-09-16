@@ -509,6 +509,7 @@ const importMarkdownFile = async (filePath) => {
 let pendingMarkdownImport = null;
 let pendingScreenshotImport = null;
 const screenshotCaptureGuard = createScreenshotCaptureGuard();
+const sentScreenshotCaptureIds = new Set();
 let rendererReady = false;
 
 const flushPendingMarkdownImport = () => {
@@ -521,11 +522,13 @@ const flushPendingMarkdownImport = () => {
 const sendScreenshotImport = (payload) => {
   const ipcPayload = screenshotImportIpcPayload(payload);
   if (!ipcPayload.bytes.byteLength) return;
+  if (ipcPayload.captureId && sentScreenshotCaptureIds.has(ipcPayload.captureId)) return;
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading() || !rendererReady) {
     pendingScreenshotImport = ipcPayload;
     return;
   }
   pendingScreenshotImport = null;
+  if (ipcPayload.captureId) sentScreenshotCaptureIds.add(ipcPayload.captureId);
   mainWindow.webContents.send("desktop:import-screenshot", ipcPayload);
 };
 
@@ -534,6 +537,8 @@ const flushPendingScreenshotImport = () => {
   const payload = pendingScreenshotImport;
   pendingScreenshotImport = null;
   if (!payload.bytes?.byteLength) return;
+  if (payload.captureId && sentScreenshotCaptureIds.has(payload.captureId)) return;
+  if (payload.captureId) sentScreenshotCaptureIds.add(payload.captureId);
   mainWindow.webContents.send("desktop:import-screenshot", payload);
 };
 
