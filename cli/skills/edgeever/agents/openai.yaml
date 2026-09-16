@@ -1,0 +1,4 @@
+interface:
+  display_name: "EdgeEver"
+  short_description: "Search and edit EdgeEver notes with the CLI"
+  default_prompt: "Use $edgeever to find and update the requested knowledge-base notes."

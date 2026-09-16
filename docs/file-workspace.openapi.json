@@ -1,0 +1,81 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "EdgeEver file workspace extensions",
+    "version": "1.74.0-kw.1"
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    },
+    {
+      "cookieAuth": []
+    }
+  ],
+  "paths": {
+    "/api/v1/file-workspace": {
+      "get": {
+        "summary": "Discover file-workspace identity and atomic revision write support",
+        "description": "Requires read:memos and read:notebooks. File clients must validate server URL and workspaceId before syncing.",
+        "responses": {
+          "200": {
+            "description": "File workspace capability",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "protocolVersion",
+                    "atomicRevisionWrites",
+                    "workspaceId"
+                  ],
+                  "properties": {
+                    "protocolVersion": {
+                      "type": "integer",
+                      "const": 1
+                    },
+                    "attachmentSync": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "atomicRevisionWrites": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "workspaceId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scopes"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      },
+      "cookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "edgeever_session"
+      }
+    }
+  }
+}

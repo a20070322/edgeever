@@ -1364,34 +1364,50 @@ export const updateMemoRecord = async (
         ]
       : [];
 
-  await db.batch([
-    ...(commit?.before ?? []),
-    ...revisionStatements,
-    db
-      .prepare(
-        `UPDATE memos
-         SET notebook_id = ?, title = ?, excerpt = ?, tags_json = ?, is_pinned = ?, updated_by = ?, updated_at = ?, created_at = COALESCE(?, created_at)
-         WHERE id = ? AND workspace_id = ? AND is_deleted = 0
-           AND EXISTS (SELECT 1 FROM notebooks n WHERE n.id = ? AND n.workspace_id = ? AND n.is_deleted = 0)`
-      )
-      .bind(notebookId, title, excerpt, JSON.stringify(tags), isPinned ? 1 : 0, actorLabel, updatedAt, input.createdAt ?? null, id, workspaceId, notebookId, workspaceId),
-    db
-      .prepare(
-        `UPDATE memo_contents
-         SET content_json = ?, content_markdown = ?, content_text = ?, content_hash = ?,
-             revision = ?, updated_at = ?, created_at = COALESCE(?, created_at)
-         WHERE memo_id = ?`
-      )
-      .bind(JSON.stringify(contentJson), contentMarkdown, contentText, contentHash, nextRevision, updatedAt, input.createdAt ?? null, id),
-    upsertMemoSearchDocumentStatement(db, id, title, contentText, tags.join(" ")),
-    ...editSessionStatements,
-    auditStatement(db, actor.actorType, actor.actorId, "memo.update", "memo", id, {
-      revision: nextRevision,
-      learning: { version: 1, workspaceId, fromNotebookId: current.notebook_id, toNotebookId: notebookId,
-        beforeTags: JSON.parse(current.tags_json), afterTags: tags },
-    }),
-    ...(commit?.after(id) ?? []),
-  ]);
+  try {
+    await db.batch([
+      // D1 and self-hosted SQLite batches are atomic. The existing CHECK
+      // (revision >= 0) aborts the whole batch if the read version is stale.
+      // A WHERE revision=? alone would silently skip this statement but still
+      // commit metadata, snapshots and indexes later in the batch.
+      db.prepare(`UPDATE memo_contents
+        SET revision = CASE WHEN revision = ? AND EXISTS (
+          SELECT 1 FROM memos WHERE id = ? AND workspace_id = ? AND is_deleted = 0
+        ) THEN revision ELSE -1 END WHERE memo_id = ?`)
+        .bind(current.revision, id, workspaceId, id),
+      ...(commit?.before ?? []),
+      ...revisionStatements,
+      db
+        .prepare(
+          `UPDATE memos
+           SET notebook_id = ?, title = ?, excerpt = ?, tags_json = ?, is_pinned = ?, updated_by = ?, updated_at = ?, created_at = COALESCE(?, created_at)
+           WHERE id = ? AND workspace_id = ? AND is_deleted = 0
+             AND EXISTS (SELECT 1 FROM notebooks n WHERE n.id = ? AND n.workspace_id = ? AND n.is_deleted = 0)`
+        )
+        .bind(notebookId, title, excerpt, JSON.stringify(tags), isPinned ? 1 : 0, actorLabel, updatedAt, input.createdAt ?? null, id, workspaceId, notebookId, workspaceId),
+      db
+        .prepare(
+          `UPDATE memo_contents
+           SET content_json = ?, content_markdown = ?, content_text = ?, content_hash = ?,
+               revision = ?, updated_at = ?, created_at = COALESCE(?, created_at)
+           WHERE memo_id = ?`
+        )
+        .bind(JSON.stringify(contentJson), contentMarkdown, contentText, contentHash, nextRevision, updatedAt, input.createdAt ?? null, id),
+      upsertMemoSearchDocumentStatement(db, id, title, contentText, tags.join(" ")),
+      ...editSessionStatements,
+      auditStatement(db, actor.actorType, actor.actorId, "memo.update", "memo", id, {
+        revision: nextRevision,
+        learning: { version: 1, workspaceId, fromNotebookId: current.notebook_id, toNotebookId: notebookId,
+          beforeTags: JSON.parse(current.tags_json), afterTags: tags },
+      }),
+      ...(commit?.after(id) ?? []),
+    ]);
+  } catch (error) {
+    if (/CHECK constraint failed:.*revision/i.test(String(error))) {
+      return { error: "revision_conflict", message: "Memo changed during save. Reload before saving.", status: 409 };
+    }
+    throw error;
+  }
 
   const memo = await getMemoDetail(db, workspaceId, id);
 

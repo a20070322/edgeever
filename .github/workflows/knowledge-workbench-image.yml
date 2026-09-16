@@ -1,0 +1,57 @@
+name: Build Knowledge Workbench image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: knowledge-workbench-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'a20070322/edgeever'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install API and Web dependencies
+        run: bun install --frozen-lockfile --filter edgeever --filter @edgeever/api --filter @edgeever/shared --filter @edgeever/public-network --filter @edgeever/web
+      - name: Check API types and affected integration tests
+        run: |
+          bun x tsc -p tsconfig.file-workspace.json --noEmit
+          bun test scripts/file-workspace/core.test.mjs apps/api/src/memo-routes.test.mjs apps/api/src/resource-routes.test.mjs apps/api/src/mcp-routes.test.mjs apps/api/src/mcp-tools.test.mjs
+      - name: Verify standalone npm package
+        run: |
+          npm ci --prefix cli --ignore-scripts --no-audit --no-fund
+          npm test --prefix cli
+      - name: Build amd64 container
+        run: docker build --build-arg EDGE_EVER_BUILD_ID="$GITHUB_SHA" --tag "ghcr.io/a20070322/edgeever:kw-$GITHUB_SHA" .
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push immutable commit tag
+        run: docker push "ghcr.io/a20070322/edgeever:kw-$GITHUB_SHA"
+      - name: Export image for hosts without GHCR access
+        run: |
+          docker save "ghcr.io/a20070322/edgeever:kw-$GITHUB_SHA" | gzip > "$RUNNER_TEMP/edgeever-image.tar.gz"
+          cd "$RUNNER_TEMP"
+          sha256sum edgeever-image.tar.gz > edgeever-image.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: edgeever-image-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/edgeever-image.tar.gz
+            ${{ runner.temp }}/edgeever-image.sha256
+          retention-days: 7

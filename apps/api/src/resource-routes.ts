@@ -12,6 +12,7 @@ import {
   SUPPORTED_IMAGE_MIME_TYPES,
   contentDispositionAttachment,
   contentDispositionInline,
+  listResourcesForMemo,
   mapResource,
   mapResourceListItem,
   mapResourceStorageSummary,
@@ -122,6 +123,21 @@ export const registerResourceRoutes = (
       resources: rows.results.map(mapResourceListItem),
       summary: mapResourceStorageSummary(stats),
     });
+  });
+
+  app.get("/api/v1/memos/:id/resources", async (context) => {
+    const denied = requireScopes(context, "read:resources");
+    if (denied) return denied;
+    const memo = await dependencies.getMemoDetail(context.env.storage.db, getWorkspaceId(context), context.req.param("id"));
+    if (!memo) return notFound(context, "Memo not found");
+    return context.json({ resources: await listResourcesForMemo(context.env.storage.db, getWorkspaceId(context), memo.id) });
+  });
+
+  app.get("/api/v1/resources/:id", async (context) => {
+    const denied = requireScopes(context, "read:resources");
+    if (denied) return denied;
+    const resource = await dependencies.getResourceRow(context.env.storage.db, getWorkspaceId(context), context.req.param("id"));
+    return resource ? context.json({ resource: mapResource(resource) }) : notFound(context, "Resource not found");
   });
 
   app.post("/api/v1/memos/:id/resources", async (context) => {

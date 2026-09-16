@@ -1,3 +1,4 @@
+import { getCurrentWorkspaceIdentity } from "./memo-service";
 import {
   DeleteMemosSchema,
   MemoCreateSchema,
@@ -117,6 +118,14 @@ export const registerMemoRoutes = (
   app: Hono<AppEnv>,
   dependencies: MemoRouteDependencies,
 ) => {
+  // File clients must probe this before pushing to older, unguarded servers.
+  app.get("/api/v1/file-workspace", async (context) => {
+    const denied = requireScopes(context, "read:memos", "read:notebooks");
+    if (denied) return denied;
+    const identity = await getCurrentWorkspaceIdentity(context.env.storage.db, context.get("auth"));
+    return context.json({ protocolVersion: 1, atomicRevisionWrites: true, attachmentSync: true, workspaceId: identity.workspace.id });
+  });
+
   app.get("/api/v1/memos", async (context) => {
     const denied = requireScopes(context, "read:memos");
     if (denied) return denied;

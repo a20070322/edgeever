@@ -821,7 +821,7 @@ export const callMcpTool = async (
       );
 
       if ("error" in result) {
-        throw new Error(result.message);
+        throw new AppError(result.error ?? "memo_update_failed", result.message ?? "Memo update failed", result.status ?? 409);
       }
 
       return { memo: result.memo };

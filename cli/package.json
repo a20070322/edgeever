@@ -1,0 +1,27 @@
+{
+  "name": "knowledge-workbench-edgeever-cli",
+  "version": "0.2.0",
+  "description": "Standalone Node.js CLI for EdgeEver notes and Markdown file workspaces",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "edgeever": "bin/edgeever.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "LICENSE",
+    "README.md",
+    "README.zh-CN.md",
+    "skills/"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@lezer/markdown": "1.7.2"
+  }
+}

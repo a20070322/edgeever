@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   update:
-    if: github.repository != 'tianma-if/edgeever'
+    if: github.repository != 'tianma-if/edgeever' && github.repository != 'a20070322/edgeever'
     name: Sync Fork and trigger deployment
     runs-on: ubuntu-latest
     timeout-minutes: 20
