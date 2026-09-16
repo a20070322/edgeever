@@ -63,6 +63,87 @@
           }
         }
       }
+    },
+    "/api/v1/resources/{id}": {
+      "get": {
+        "summary": "Get resource metadata and stable application URL",
+        "description": "Requires read:resources; results are scoped to the authenticated workspace.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resource metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "resource": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient scopes"
+          },
+          "404": {
+            "description": "Resource or memo not found"
+          }
+        }
+      }
+    },
+    "/api/v1/memos/{id}/resources": {
+      "get": {
+        "summary": "List active resources for an accessible memo",
+        "description": "Requires read:resources; results are scoped to the authenticated workspace.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resource metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "resources": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient scopes"
+          },
+          "404": {
+            "description": "Resource or memo not found"
+          }
+        }
+      }
     }
   },
   "components": {
