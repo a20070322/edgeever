@@ -1,5 +1,5 @@
 import { CompanionDiscoverySettingsInputSchema, CompanionIdSchema, CompanionMemoryImportSchema, CompanionMemoryInputSchema, CompanionMemoryUpdateSchema,
-  CompanionTurnInputSchema, type CompanionEvent, type CompanionSource } from "@edgeever/shared";
+  CompanionTurnInputSchema, CompanionTurnResumeSchema, sealCompanionProcess, type CompanionEvent, type CompanionSource, type CompanionTurnInput } from "@edgeever/shared";
 import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -10,15 +10,124 @@ import { apiError, forbidden, notFound } from "./http-errors";
 import { requireUser, getWorkspaceId } from "./request-auth";
 import { beginCompanionTurn, checkpointCompanionTurn, clearCompanionHistory, companionRevision,
   forgetCompanionMemory, getCompanionTurn, listCompanionMemories, listCompanionTurns, mapCompanionTurn,
-  saveCompanionMemory, importCompanionMemories, type CompanionScope } from "./companion-service";
-import type { streamCompanion } from "./companion-runtime";
+  resumeCompanionTurn, saveCompanionMemory, importCompanionMemories, turnAnswers, turnFocus, type CompanionScope, type TurnRow } from "./companion-service";
+import { parseJsonArray } from "./companion-tool-receipts";
+import type { CompanionRunState, streamCompanion } from "./companion-runtime";
 import { applyCompanionAction, dismissCompanionAction, listCompanionActions } from "./companion-actions";
 import { acknowledgeDiscovery, rememberDiscoveryFeedback, checkDiscoveries, getDiscoverySettings, listDiscoveries, saveDiscoverySettings } from "./companion-discovery";
 
 const scopeFor = (c: AppContext): CompanionScope => ({ workspaceId: getWorkspaceId(c), ownerId: c.get("auth").actorId! });
-const fail = (c: AppContext, error: unknown) => error instanceof AppError
-  ? apiError(c, error.code, error.message, error.status)
-  : apiError(c, "companion_failed", "The companion is unavailable. Please retry later.", 503);
+const fail = (c: AppContext, error: unknown) => {
+  if (error instanceof AppError) return apiError(c, error.code, error.message, error.status);
+  console.error("companion_failed", error instanceof Error ? error.name : "unknown");
+  return apiError(c, "companion_failed", "The companion is unavailable. Please retry later.", 503);
+};
+
+const streamCompanionTurn = (
+  c: AppContext,
+  dependencies: { stream?: typeof streamCompanion },
+  args: {
+    db: AppContext["env"]["storage"]["db"]; scope: CompanionScope; row: TurnRow; input: CompanionTurnInput;
+    model: Awaited<ReturnType<typeof loadDefaultAiModel>>; resume?: { response?: string; answers?: import("@edgeever/shared").CompanionAnswer[] };
+  },
+) => {
+  const { db, scope, row, input, model } = args;
+  const stop = new AbortController();
+  // Keep the wall clock inside the turn lease (90s) so a checkpoint still lands.
+  const timeout = setTimeout(() => stop.abort(), 85_000);
+  const signal = AbortSignal.any([stop.signal, c.req.raw.signal]);
+  const assertActive = async () => {
+    signal.throwIfAborted();
+    const current = await getCompanionTurn(db, scope, row.id);
+    if (!current || current.status !== "running" || await companionRevision(db, scope) !== row.memory_revision) {
+      stop.abort();
+      throw new AppError("companion_context_changed", "Context changed.", 409);
+    }
+  };
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let response = args.resume?.response ?? "";
+      let process = row.process_text ?? "";
+      let persisted = response.length;
+      const sources: CompanionSource[] = parseJsonArray(row.sources_json);
+      const run: CompanionRunState = {
+        tools: parseJsonArray(row.tools_json),
+        todos: parseJsonArray(row.todos_json),
+        questions: args.resume ? [] : parseJsonArray(row.questions_json),
+        pause: { ask: false },
+      };
+      const extras = () => ({ ...run, process });
+      const send = (event: CompanionEvent) => {
+        try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)); }
+        catch { /* The client may have disconnected. */ }
+      };
+      const sealProcess = () => {
+        if (!response.trim()) return;
+        ({ process, response } = sealCompanionProcess(process, response));
+        persisted = 0;
+        send({ type: "process", text: process });
+      };
+      run.onProgress = async () => {
+        sealProcess();
+        await checkpointCompanionTurn(db, scope, row, response, sources, "running", undefined, extras());
+        send({ type: "tools", tools: run.tools, todos: run.todos, questions: run.questions });
+      };
+      try {
+        send({ type: "start", id: row.id });
+        if (process) send({ type: "process", text: process });
+        if (run.tools.length || run.todos.length) send({ type: "tools", tools: run.tools, todos: run.todos, questions: run.questions });
+        const [memories, history] = await Promise.all([listCompanionMemories(db, scope), listCompanionTurns(db, scope, input.threadId)]);
+        const stream = dependencies.stream ?? (await import("./companion-runtime")).streamCompanion;
+        await assertActive();
+        const result = await stream({
+          db, scope, input, model, memories, history, revision: row.memory_revision, signal, sources, assertActive, context: c, run,
+          resume: args.resume,
+        });
+        for await (const part of result.fullStream) {
+          signal.throwIfAborted();
+          if (part.type === "error") throw part.error;
+          if (part.type !== "text-delta") continue;
+          const delta = typeof part.text === "string" ? part.text : "";
+          if (!delta) continue;
+          response += delta;
+          if (response.length > 16000) throw new Error("Response limit exceeded.");
+          await assertActive();
+          send({ type: "text-delta", text: delta });
+          if (response.length - persisted >= 300) {
+            await checkpointCompanionTurn(db, scope, row, response, sources, "running", undefined, extras());
+            persisted = response.length;
+          }
+        }
+        await assertActive();
+        if (!response.trim() && !run.tools.some(tool => tool.status === "done") && !run.todos.length && !run.questions.length) {
+          throw new Error("No text returned.");
+        }
+        const usage = await result.totalUsage;
+        const status = run.pause.ask || run.questions.length ? "interrupted" : "completed";
+        await checkpointCompanionTurn(db, scope, row, response, sources, status, usage, extras());
+        const completed = await getCompanionTurn(db, scope, row.id);
+        if (completed) send({ type: "done", turn: mapCompanionTurn(completed) });
+      } catch (error) {
+        const current = await getCompanionTurn(db, scope, row.id);
+        const status = current?.status === "cancelled" || (error instanceof AppError && error.code === "companion_context_changed")
+          ? "cancelled" : signal.aborted ? "interrupted" : "failed";
+        if (current?.status === "running") {
+          await checkpointCompanionTurn(db, scope, row, response, sources, status, undefined, extras()).catch(() => {});
+        }
+        const finished = await getCompanionTurn(db, scope, row.id);
+        if (status === "interrupted" && finished) send({ type: "done", turn: mapCompanionTurn(finished) });
+        else send({ type: "error", code: error instanceof AppError ? error.code : "companion_generation_failed" });
+      } finally {
+        stop.abort();
+        clearTimeout(timeout);
+        try { controller.close(); } catch { /* The client may have disconnected. */ }
+      }
+    },
+    cancel() { stop.abort(); clearTimeout(timeout); },
+  });
+  return new Response(body, { headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", "X-Accel-Buffering": "no" } });
+};
 
 export const registerCompanionRoutes = (parent: Hono<AppEnv>, dependencies: {
   isDemoMode: (env: Bindings) => boolean;
@@ -114,6 +223,25 @@ export const registerCompanionRoutes = (parent: Hono<AppEnv>, dependencies: {
       .bind(getWorkspaceId(c), c.get("auth").actorId, c.req.param("id")).run();
     return c.json({ ok: true });
   });
+  app.post("/api/v1/companion/turns/:id/resume", zValidator("json", CompanionTurnResumeSchema), async c => {
+    if (!CompanionIdSchema.safeParse(c.req.param("id")).success) return notFound(c, "Conversation not found.");
+    const db = c.env.storage.db;
+    const scope = scopeFor(c);
+    const answers = c.req.valid("json").answers;
+    const previous = await getCompanionTurn(db, scope, c.req.param("id"));
+    if (!previous) return notFound(c, "Conversation not found.");
+    if (parseJsonArray(previous.questions_json).length && !answers?.length) {
+      return apiError(c, "companion_answers_required", "Answer the questions before continuing.", 400);
+    }
+    const model = await (dependencies.loadModel ?? loadDefaultAiModel)(db, scope.workspaceId, c.env);
+    const row = await resumeCompanionTurn(db, scope, previous.id, answers);
+    const input: CompanionTurnInput = {
+      id: row.id, threadId: row.thread_id, message: row.message, useMemory: row.use_memory === 1,
+      allowNotes: row.allow_notes === 1, allowWrites: true, locale: row.locale as CompanionTurnInput["locale"],
+      mentions: parseJsonArray(row.mentions_json), focus: Object.keys(turnFocus(row)).length ? turnFocus(row) : undefined,
+    };
+    return streamCompanionTurn(c, dependencies, { db, scope, row, input, model, resume: { response: row.response, answers: answers ?? turnAnswers(row) } });
+  });
   // Separate export is explicit in the preview UI: the note ZIP does not yet
   // contain companion data. Do not silently imply lossless full-app backup.
   app.get("/api/v1/companion/export", async c => {
@@ -149,63 +277,7 @@ export const registerCompanionRoutes = (parent: Hono<AppEnv>, dependencies: {
       await db.prepare("UPDATE companion_turns SET status = 'cancelled' WHERE id = ? AND workspace_id = ? AND owner_id = ?").bind(row.id, scope.workspaceId, scope.ownerId).run();
       throw new AppError("companion_context_changed", "Memory settings changed. Retry with current settings.", 409);
     }
-    const stop = new AbortController();
-    const timeout = setTimeout(() => stop.abort(), 60_000);
-    const signal = AbortSignal.any([stop.signal, c.req.raw.signal]);
-    const assertActive = async () => {
-      signal.throwIfAborted();
-      const current = await getCompanionTurn(db, scope, row.id);
-      if (!current || current.status !== "running" || await companionRevision(db, scope) !== row.memory_revision) {
-        stop.abort();
-        throw new AppError("companion_context_changed", "Context changed.", 409);
-      }
-    };
-    const encoder = new TextEncoder();
-    const body = new ReadableStream<Uint8Array>({
-      async start(controller) {
-        let response = "";
-        let persisted = 0;
-        const sources: CompanionSource[] = [];
-        const send = (event: CompanionEvent) => { if (!signal.aborted) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)); };
-        try {
-          send({ type: "start", id: row.id });
-          const [memories, history] = await Promise.all([listCompanionMemories(db, scope), listCompanionTurns(db, scope, input.threadId)]);
-          const stream = dependencies.stream ?? (await import("./companion-runtime")).streamCompanion;
-          await assertActive();
-          const result = await stream({ db, scope, input, model, memories, history, revision: row.memory_revision, signal, sources, assertActive, context: c });
-          for await (const part of result.fullStream) {
-            signal.throwIfAborted();
-            if (part.type === "error") throw part.error;
-            if (part.type !== "text-delta") continue;
-            response += part.text;
-            if (response.length > 16000) throw new Error("Response limit exceeded.");
-            // Persist before display in bounded chunks, so refresh recovers the
-            // displayed prefix without writing one database row per token.
-            if (response.length - persisted >= 300) {
-              await checkpointCompanionTurn(db, scope, row, response, sources, "running");
-              send({ type: "text-delta", text: response.slice(persisted) });
-              persisted = response.length;
-            }
-          }
-          await assertActive();
-          if (!response.trim()) throw new Error("No text returned.");
-          const usage = await result.totalUsage;
-          await checkpointCompanionTurn(db, scope, row, response, sources, "completed", usage);
-          send({ type: "text-delta", text: response.slice(persisted) });
-          const completed = await getCompanionTurn(db, scope, row.id);
-          if (completed) send({ type: "done", turn: mapCompanionTurn(completed) });
-        } catch (error) {
-          await checkpointCompanionTurn(db, scope, row, response, sources, signal.aborted ? "cancelled" : "failed").catch(() => {});
-          send({ type: "error", code: error instanceof AppError ? error.code : "companion_generation_failed" });
-        } finally {
-          stop.abort();
-          clearTimeout(timeout);
-          try { controller.close(); } catch { /* The client may have disconnected. */ }
-        }
-      },
-      cancel() { stop.abort(); clearTimeout(timeout); },
-    });
-    return new Response(body, { headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", "X-Accel-Buffering": "no" } });
+    return streamCompanionTurn(c, dependencies, { db, scope, row, input, model });
   });
   parent.route("/", app);
 };

@@ -152,7 +152,39 @@ export const ja = {
       "failed": "失敗 · 一部の内容が残る場合があります",
       "cancelled": "停止",
       "interrupted": "中断"
-    }
+    },
+    timeline: {
+      title: "この実行",
+      running: "進行中",
+      error: "未完了",
+      open: "ノートを開く",
+      restore: "ゴミ箱から復元",
+      restoreRevision: "前の版に戻す",
+      restored: "復元しました",
+      restoreFailed: "復元できませんでした。ノートのゴミ箱または履歴を確認してください。",
+    },
+    mentions: {
+      hint: "@ でノート、ノートブック、タグを固定",
+      notes: "ノート",
+      notebooks: "ノートブック",
+      tags: "タグ",
+      empty: "一致するノート、ノートブック、タグはありません",
+      remove: "{{title}} を外す",
+    },
+    todos: {
+      title: "タスク",
+      pending: "未着手",
+      inProgress: "進行中",
+      completed: "完了",
+    },
+    questions: {
+      title: "選択が必要です",
+      submit: "続ける",
+      other: "その他",
+    },
+    continue: "未完了の作業を続ける",
+    process: "思考過程",
+    trace: "過程 · {{count}} 手",
   },
   common: {
     appName: "EdgeEver",
@@ -978,7 +1010,7 @@ export const ja = {
     modes: {
       instruction: "指示モード",
       ask: "Agent モード",
-      askHint: "ノートの検索と整理ができます。書き込みは先に一覧表示され、確認後に実行されます。",
+      askHint: "ノートの検索と整理ができます。削除はゴミ箱へ、編集は履歴から戻せます。",
       askPlaceholder: "ノートに尋ねる、または Agent に整理を依頼…",
       resumeLast: "前回の続き",
     },

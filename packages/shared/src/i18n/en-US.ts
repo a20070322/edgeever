@@ -152,7 +152,39 @@ export const enUS = {
       "failed": "Failed · partial content may remain",
       "cancelled": "Stopped",
       "interrupted": "Interrupted"
-    }
+    },
+    timeline: {
+      title: "This run",
+      running: "In progress",
+      error: "Did not finish",
+      open: "Open note",
+      restore: "Restore from Trash",
+      restoreRevision: "Restore previous version",
+      restored: "Restored",
+      restoreFailed: "Could not restore. Check Trash or revision history in the note.",
+    },
+    mentions: {
+      hint: "Type @ to pin a note, notebook, or tag",
+      notes: "Notes",
+      notebooks: "Notebooks",
+      tags: "Tags",
+      empty: "No matching notes, notebooks, or tags",
+      remove: "Remove {{title}}",
+    },
+    todos: {
+      title: "Tasks",
+      pending: "To do",
+      inProgress: "In progress",
+      completed: "Done",
+    },
+    questions: {
+      title: "A choice is needed",
+      submit: "Continue",
+      other: "Other",
+    },
+    continue: "Continue unfinished work",
+    process: "Thinking",
+    trace: "Run · {{count}} steps",
   },
   common: {
     appName: "EdgeEver",
@@ -978,7 +1010,7 @@ export const enUS = {
     modes: {
       instruction: "Instruction",
       ask: "Agent",
-      askHint: "Search and organize notes. Writes are listed first and run only after you confirm.",
+      askHint: "Search and organize notes. Deleted notes go to Trash; edits can be restored from history.",
       askPlaceholder: "Ask your notes, or have the agent organize them…",
       resumeLast: "Continue last",
     },

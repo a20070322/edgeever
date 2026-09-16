@@ -1,10 +1,12 @@
 import { jsonSchema, tool, type ToolSet } from "ai";
-import type { CompanionSource, CompanionTurnInput, MemoDetail, MemoSummary } from "@edgeever/shared";
+import type { CompanionSource, CompanionTodo, CompanionToolCall, CompanionTurnInput, MemoDetail, MemoSummary } from "@edgeever/shared";
 import type { DatabaseAdapter } from "./storage-contract";
 import type { AppContext } from "./api-context";
 import type { CompanionScope } from "./companion-service";
+import type { CompanionRunState } from "./companion-runtime";
 import { COMPANION_MCP_TOOLS, validateCompanionTool } from "./companion-tool-catalog";
 import { companionWorkspaceCursor, proposeCompanionToolAction } from "./companion-tool-actions";
+import { describeCompanionTool } from "./companion-tool-receipts";
 import { executeWorkspaceTool } from "./mcp-tool-executor";
 import { getMemoDetail } from "./memo-service";
 import { AppError } from "./app-error";
@@ -14,9 +16,12 @@ const AUTO_APPLY_WRITES = new Set(
 );
 
 export function createCompanionTools(args: { db: DatabaseAdapter; scope: CompanionScope; input: CompanionTurnInput;
-  context?: AppContext; signal: AbortSignal; assertActive: () => Promise<void>; sources: CompanionSource[] }): ToolSet {
+  context?: AppContext; signal: AbortSignal; assertActive: () => Promise<void>; sources: CompanionSource[];
+  run?: CompanionRunState }): ToolSet {
   if (!args.input.allowNotes || !args.context) return {};
   let calls = 0;
+  let consecutiveErrors = 0;
+  let lastErrorTool = "";
   let noteRemaining = 12000;
   let metadataRemaining = 12000;
   let cursor: number | undefined;
@@ -26,7 +31,7 @@ export function createCompanionTools(args: { db: DatabaseAdapter; scope: Compani
     noteRemaining -= result.length;
     return result;
   };
-  const remember = (memo: MemoSummary) => {
+  const remember = (memo: Pick<MemoSummary, "id" | "revision" | "notebookId"> & { title?: string | null }) => {
     const source = { id: memo.id, title: (memo.title ?? "").slice(0, 200), revision: memo.revision, notebookId: memo.notebookId };
     const index = args.sources.findIndex(item => item.id === memo.id);
     if (index < 0) args.sources.push(source); else args.sources[index] = source;
@@ -60,7 +65,7 @@ export function createCompanionTools(args: { db: DatabaseAdapter; scope: Compani
       return undefined;
     }
   };
-  return Object.fromEntries(catalog.map(definition => {
+  const mcpTools = Object.fromEntries(catalog.map(definition => {
     const readOnly = definition.annotations.readOnlyHint;
     const autoApply = AUTO_APPLY_WRITES.has(definition.name);
     return [definition.name, tool({
@@ -73,13 +78,33 @@ export function createCompanionTools(args: { db: DatabaseAdapter; scope: Compani
         args.signal.throwIfAborted();
         await args.assertActive();
         if (++calls > 16) throw new Error("Tool call limit reached.");
+        const call: CompanionToolCall = { id: crypto.randomUUID(), name: definition.name, status: "running", effects: [] };
+        args.run?.tools.push(call);
+        await args.run?.onProgress?.();
+        try {
         const { _reason, ...parameters } = input;
         const { args: parameters_ } = validateCompanionTool(definition.name, parameters);
+        const previous = () => new Map([...inspected].map(([id, revision]) => [id, { revision, title: args.sources.find(source => source.id === id)?.title }]));
+        const done = async (payload: unknown) => {
+          if (call.status === "running") {
+            const failed = Boolean(payload && typeof payload === "object" && "error" in (payload as object));
+            call.status = failed ? "error" : "done";
+            if (failed) call.error = String((payload as { error: unknown }).error);
+            else {
+              call.effects = describeCompanionTool(definition.name, parameters_, payload, previous());
+              consecutiveErrors = 0;
+            }
+            await args.run?.onProgress?.();
+          }
+          return payload;
+        };
         const current = await companionWorkspaceCursor(args.db, args.scope.workspaceId);
         cursor ??= current;
-        if (cursor !== current) return { error: "Notes changed during this request. Start a fresh request." };
-        if (!readOnly && !autoApply && parameters_.dryRun !== true) return proposeCompanionToolAction(args.db, args.scope, args.input.id,
-          definition.name, parameters_, typeof _reason === "string" ? _reason : definition.title, cursor, inspected);
+        if (cursor !== current) return done({ error: "Notes changed during this request. Start a fresh request." });
+        if (!readOnly && !autoApply && parameters_.dryRun !== true) {
+          return done(await proposeCompanionToolAction(args.db, args.scope, args.input.id,
+            definition.name, parameters_, typeof _reason === "string" ? _reason : definition.title, cursor, inspected));
+        }
         if (autoApply && parameters_.dryRun !== true && (definition.name === "update_memo" || definition.name === "update_diagram" || definition.name === "restore_memo_revision")) {
           const memo = await getMemoDetail(args.db, args.scope.workspaceId, String(parameters_.memoId));
           if (!memo || inspected.get(memo.id) !== memo.revision) {
@@ -102,8 +127,8 @@ export function createCompanionTools(args: { db: DatabaseAdapter; scope: Compani
         if ((definition.name === "get_memo" || definition.name === "get_diagram") && inspected.has(String(parameters_.memoId))) {
           // The original full result remains in this run's model messages. Only
           // reuse it after authorization/context/cursor checks, never across runs.
-          return { id: parameters_.memoId, revision: inspected.get(String(parameters_.memoId)), alreadyRead: true,
-            message: "Use the complete result already returned in this run." };
+          return done({ id: parameters_.memoId, revision: inspected.get(String(parameters_.memoId)), alreadyRead: true,
+            message: "Use the complete result already returned in this run." });
         }
         let searchLimit: number | undefined;
         if (definition.name === "search_memos") {
@@ -121,7 +146,7 @@ export function createCompanionTools(args: { db: DatabaseAdapter; scope: Compani
           if (definition.name === "create_diagram_memo") {
             const created = result as { memo: MemoDetail; diagramKind?: string; diagram?: { nodes?: unknown[] } };
             remember(created.memo);
-            return {
+            return done({
               applied: true,
               id: created.memo.id,
               title: created.memo.title,
@@ -130,27 +155,27 @@ export function createCompanionTools(args: { db: DatabaseAdapter; scope: Compani
               revision: created.memo.revision,
               diagramKind: created.diagramKind,
               nodeCount: Array.isArray(created.diagram?.nodes) ? created.diagram.nodes.length : undefined,
-            };
+            });
           }
           if (definition.name === "update_diagram") {
             const updated = result as { memo: { id: string; title: string | null; revision: number }; diagram?: { nodes?: unknown[] }; changes?: unknown };
             inspected.set(updated.memo.id, updated.memo.revision);
-            return {
+            return done({
               applied: true,
               id: updated.memo.id,
               title: updated.memo.title,
               revision: updated.memo.revision,
               nodeCount: Array.isArray(updated.diagram?.nodes) ? updated.diagram.nodes.length : undefined,
               changes: updated.changes,
-            };
+            });
           }
           if ((definition.name === "create_memo" || definition.name === "use_note_template" || definition.name === "merge_memos")
             && result && typeof result === "object" && "memo" in result) {
             remember((result as { memo: MemoDetail }).memo);
           }
-          return { applied: true, ...(typeof result === "object" && result ? result as object : { result }) };
+          return done({ applied: true, ...(typeof result === "object" && result ? result as object : { result }) });
         }
-        if (current !== await companionWorkspaceCursor(args.db, args.scope.workspaceId)) return { error: "Notes changed during this read. Start a fresh request." };
+        if (current !== await companionWorkspaceCursor(args.db, args.scope.workspaceId)) return done({ error: "Notes changed during this read. Start a fresh request." });
         if (definition.name === "get_diagram") {
           const payload = result as { memo: { id: string; title: string | null; revision: number }; diagram: { kind?: string; nodes?: unknown[] } };
           inspected.set(payload.memo.id, payload.memo.revision);
@@ -161,7 +186,7 @@ export function createCompanionTools(args: { db: DatabaseAdapter; scope: Compani
             revision: payload.memo.revision,
             notebookId: known?.notebookId || "",
           });
-          return payload;
+          return done(payload);
         }
         if (definition.name === "get_memo") {
           const payload = result as { memo: MemoDetail; diagram?: { kind?: string } };
@@ -169,22 +194,22 @@ export function createCompanionTools(args: { db: DatabaseAdapter; scope: Compani
           remember(memo);
           if (payload.diagram) {
             inspected.set(memo.id, memo.revision);
-            return {
+            return done({
               id: memo.id, title: memo.title, notebookId: memo.notebookId, tags: memo.tags, revision: memo.revision,
               createdAt: memo.createdAt, updatedAt: memo.updatedAt, diagramKind: payload.diagram.kind, diagram: payload.diagram,
               message: "This is an editable diagram. Change it with update_diagram, not update_memo.",
-            };
+            });
           }
           const content = takeNoteText(memo.contentMarkdown, 8000);
           if (content.length === memo.contentMarkdown.length) inspected.set(memo.id, memo.revision); else inspected.delete(memo.id);
-          return { id: memo.id, title: memo.title, notebookId: memo.notebookId, tags: memo.tags, revision: memo.revision,
+          return done({ id: memo.id, title: memo.title, notebookId: memo.notebookId, tags: memo.tags, revision: memo.revision,
             createdAt: memo.createdAt, updatedAt: memo.updatedAt,
-            content, truncated: content.length !== memo.contentMarkdown.length };
+            content, truncated: content.length !== memo.contentMarkdown.length });
         }
         if (definition.name === "search_memos" || definition.name === "list_memos") {
           const listed = result as { memos: MemoSummary[]; hasMore?: boolean };
           const memos = searchLimit === undefined ? listed.memos : listed.memos.slice(0, searchLimit);
-          return {
+          return done({
             ...listed,
             hasMore: searchLimit === undefined ? Boolean(listed.hasMore) : listed.memos.length > memos.length,
             memos: await Promise.all(memos.map(async memo => ({
@@ -196,13 +221,110 @@ export function createCompanionTools(args: { db: DatabaseAdapter; scope: Compani
               updatedAt: memo.updatedAt,
               excerpt: takeNoteText(memo.excerpt, 180),
             }))),
-          };
+          });
         }
         const serialized = JSON.stringify(result);
         const text = serialized.slice(0, Math.min(8000, metadataRemaining));
         metadataRemaining -= text.length;
-        return text.length === serialized.length ? result : { truncated: true, data: text };
+        return done(text.length === serialized.length ? result : { truncated: true, data: text });
+        } catch (error) {
+          call.status = "error";
+          call.error = error instanceof AppError ? error.message : "Tool failed.";
+          consecutiveErrors = lastErrorTool === definition.name ? consecutiveErrors + 1 : 1;
+          lastErrorTool = definition.name;
+          await args.run?.onProgress?.();
+          if (consecutiveErrors >= 3) {
+            return { error: `Repeated tool failure: "${definition.name}" failed 3 times. Stop retrying it and answer with what you have.` };
+          }
+          throw error;
+        }
       },
     })];
   }));
+  return {
+    ...mcpTools,
+    todo_write: tool({
+      description: "Replace the task list for this run. Use for multi-step work (≥3 steps). Keep at most one item in_progress.",
+      inputSchema: jsonSchema<{ todos: CompanionTodo[] }>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          todos: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                id: { type: "string" },
+                content: { type: "string" },
+                status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+              },
+              required: ["content", "status"],
+            },
+          },
+        },
+        required: ["todos"],
+      } as Parameters<typeof jsonSchema>[0]),
+      execute: async ({ todos }) => {
+        args.signal.throwIfAborted();
+        await args.assertActive();
+        if (!args.run) return { todos: [] };
+        args.run.todos.splice(0, args.run.todos.length, ...todos.slice(0, 12).map((item, index) => ({
+          id: item.id?.trim() || String(index + 1),
+          content: String(item.content).slice(0, 120),
+          status: item.status,
+        })));
+        await args.run.onProgress?.();
+        return { todos: args.run.todos };
+      },
+    }),
+    ask_user_question: tool({
+      description: "Ask the user 1-3 structured questions when you cannot proceed without a choice (notebook, notes, or strategy). Do not use this to narrate writes you can already perform. Stop after calling it.",
+      inputSchema: jsonSchema<{ questions: Array<{ id: string; prompt: string; inputType: "free_text" | "single_select" | "multi_select"; options?: Array<{ id: string; label: string }> }> }>({
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          questions: {
+            type: "array",
+            minItems: 1,
+            maxItems: 3,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                id: { type: "string" },
+                prompt: { type: "string" },
+                inputType: { type: "string", enum: ["free_text", "single_select", "multi_select"] },
+                options: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: { id: { type: "string" }, label: { type: "string" } },
+                    required: ["id", "label"],
+                  },
+                },
+              },
+              required: ["id", "prompt", "inputType"],
+            },
+          },
+        },
+        required: ["questions"],
+      } as Parameters<typeof jsonSchema>[0]),
+      execute: async ({ questions }) => {
+        args.signal.throwIfAborted();
+        await args.assertActive();
+        if (!args.run) return { waiting: false };
+        args.run.questions.splice(0, args.run.questions.length, ...questions.slice(0, 3).map(question => ({
+          id: question.id.slice(0, 80),
+          prompt: question.prompt.slice(0, 200),
+          inputType: question.inputType,
+          ...(question.options?.length ? { options: question.options.slice(0, 6).map(option => ({ id: option.id.slice(0, 80), label: option.label.slice(0, 80) })) } : {}),
+        })));
+        args.run.pause.ask = true;
+        await args.run.onProgress?.();
+        return { waiting: true, message: "Stop. Wait for the user's answers in the next message." };
+      },
+    }),
+  };
 }

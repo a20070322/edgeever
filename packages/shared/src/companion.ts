@@ -19,6 +19,13 @@ export const CompanionTurnFocusSchema = z.object({
   contentTruncated: z.boolean().optional(),
   diagramKind: z.enum(["mind-map", "flowchart", "architecture"]).optional(),
 }).strict();
+export const CompanionMentionSchema = z.object({
+  type: z.enum(["memo", "notebook", "tag"]),
+  id: z.string().trim().min(1).max(100),
+  title: z.string().trim().max(160).optional(),
+}).strict();
+export type CompanionMention = z.infer<typeof CompanionMentionSchema>;
+
 export const CompanionTurnInputSchema = z.object({
   id: CompanionIdSchema,
   threadId: CompanionIdSchema,
@@ -28,8 +35,49 @@ export const CompanionTurnInputSchema = z.object({
   allowWrites: z.boolean().optional(),
   locale: z.enum(["zh-CN", "en-US", "ja"]).default("en-US"),
   focus: CompanionTurnFocusSchema.optional(),
+  mentions: z.array(CompanionMentionSchema).max(8).optional(),
 }).strict();
 export type CompanionTurnInput = z.infer<typeof CompanionTurnInputSchema>;
+
+export const CompanionQuestionSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  prompt: z.string().trim().min(1).max(200),
+  inputType: z.enum(["free_text", "single_select", "multi_select"]),
+  options: z.array(z.object({
+    id: z.string().trim().min(1).max(80),
+    label: z.string().trim().min(1).max(80),
+  }).strict()).min(2).max(6).optional(),
+}).strict();
+export type CompanionQuestion = z.infer<typeof CompanionQuestionSchema>;
+export const CompanionAnswerSchema = z.object({
+  questionId: z.string().trim().min(1).max(80),
+  optionIds: z.array(z.string().trim().min(1).max(80)).max(6).optional(),
+  text: z.string().trim().max(400).optional(),
+}).strict();
+export type CompanionAnswer = z.infer<typeof CompanionAnswerSchema>;
+export const CompanionTurnResumeSchema = z.object({
+  answers: z.array(CompanionAnswerSchema).max(3).optional(),
+}).strict();
+export type CompanionTurnResume = z.infer<typeof CompanionTurnResumeSchema>;
+export type CompanionTodoStatus = "pending" | "in_progress" | "completed";
+export type CompanionTodo = { id: string; content: string; status: CompanionTodoStatus };
+export type CompanionToolEffectKind =
+  | "created" | "updated" | "merged" | "moved" | "trashed" | "restored" | "tagged" | "read" | "listed" | "other";
+export type CompanionToolEffect = {
+  kind: CompanionToolEffectKind;
+  memoId?: string;
+  notebookId?: string;
+  title?: string;
+  revision?: number;
+  previousRevision?: number;
+};
+export type CompanionToolCall = {
+  id: string;
+  name: string;
+  status: "running" | "done" | "error";
+  effects: CompanionToolEffect[];
+  error?: string;
+};
 export type CompanionMemory = {
   id: string;
   content: string;
@@ -121,8 +169,13 @@ export type CompanionTurn = {
   threadId: string;
   message: string;
   response: string;
+  process: string;
   status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
   sources: CompanionSource[];
+  tools: CompanionToolCall[];
+  todos: CompanionTodo[];
+  questions: CompanionQuestion[];
+  mentions: CompanionMention[];
   model: string;
   inputTokens: number | null;
   outputTokens: number | null;
@@ -131,8 +184,22 @@ export type CompanionTurn = {
 export type CompanionEvent =
   | { type: "start"; id: string }
   | { type: "text-delta"; text: string }
+  | { type: "process"; text: string }
+  | { type: "tools"; tools: CompanionToolCall[]; todos: CompanionTodo[]; questions: CompanionQuestion[] }
   | { type: "done"; turn: CompanionTurn }
   | { type: "error"; code: string };
+
+export const sealCompanionProcess = (process: string, response: string) => ({
+  process: [process.trim(), response.trim()].filter(Boolean).join("\n\n"),
+  response: "",
+});
+
+export const parseCompanionMentionQuery = (text: string, cursor: number) => {
+  const prefix = text.slice(0, Math.max(0, Math.min(cursor, text.length)));
+  const match = prefix.match(/@([^\s@]*)$/);
+  if (!match) return null;
+  return { query: match[1] ?? "", start: prefix.length - match[0].length, end: cursor };
+};
 
 export const CompanionMemoryImportSchema = z.object({
   version: z.union([z.literal(1), z.literal(2)]),

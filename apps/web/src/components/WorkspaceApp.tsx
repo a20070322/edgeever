@@ -24,6 +24,7 @@ import { MobileBottomNav, MobileNotebookPicker } from "./WorkspaceMobileChrome";
 import { QuickMemoSwitcher } from "./QuickMemoSwitcher";
 import { AppConfirmDialog, MemoDeleteConfirmDialog, NotebookNameDialog } from "./dialogs/ConfirmDialogs";
 import { PluginPanelDialog } from "./plugins/PluginPanelDialog";
+import { shouldDiscardPluginNoteSearchRequest } from "./editor/note-search";
 import { api, getOrCreateClientDeviceId } from "@/lib/api";
 import { MarkdownExportMemoryLimitError, type MarkdownExportProgress } from "@/lib/markdown-export";
 import { exportSelectedMemosAsMarkdownZip } from "@/lib/selected-markdown-export";
@@ -2208,6 +2209,12 @@ export const WorkspaceApp = ({
   }, [clearMemoSelection, clearPendingCreatedMemo, navigateWorkspaceHome, setSelectedMemoId, setSelectedNotebookId]);
 
   useEffect(() => pluginHost.setNavigationAdapter({ openNote: handleOpenPluginNote }), [handleOpenPluginNote, pluginHost]);
+
+  useEffect(() => {
+    if (shouldDiscardPluginNoteSearchRequest(pluginNavigationRequest, selectedMemoId)) {
+      setPluginNavigationRequest(null);
+    }
+  }, [pluginNavigationRequest, selectedMemoId]);
 
   const handleCancelMobileSearch = () => {
     setSearch("");

@@ -15,6 +15,7 @@ import type {
   CompanionAction,
   CompanionTurn,
   CompanionTurnInput,
+  CompanionTurnResume,
   CompanionEvent,
   ApiToken,
   AuthSession,
@@ -811,6 +812,14 @@ export const createEdgeEverClient = (options: EdgeEverClientOptions = {}) => {
     listCompanionTurns: () => request<{ turns: CompanionTurn[] }>("/api/v1/companion/turns"),
     getCompanionTurn: (id: string) => request<{ turn: CompanionTurn }>(`/api/v1/companion/turns/${encodeURIComponent(id)}`),
     cancelCompanionTurn: (id: string) => request<{ ok: true }>(`/api/v1/companion/turns/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
+    resumeCompanionTurn: async (id: string, payload: CompanionTurnResume = {}, options: { signal?: AbortSignal; onEvent: (event: CompanionEvent) => void }) => {
+      const { context, response } = await send(`/api/v1/companion/turns/${encodeURIComponent(id)}/resume`, {
+        method: "POST", body: JSON.stringify(payload), signal: options.signal,
+      });
+      if (!response.ok) await throwRequestError(context, response);
+      if (!response.body) throw new ApiRequestError("Stream unavailable", 502, "companion_failed");
+      await consumeEventStream(response.body, options.onEvent);
+    },
     clearCompanionHistory: () => request<{ ok: true }>("/api/v1/companion/history", { method: "DELETE" }),
     exportCompanion: () => request<{ version: 2; controls: { useMemory: boolean; learningEnabled: boolean }; exportedAt: string; memories: CompanionMemory[]; turns: CompanionTurn[]; actions: CompanionAction[] }>("/api/v1/companion/export"),
     importCompanionMemories: (memories: { content: string; kind?: "explicit" | "inferred" }[], controls?: { useMemory: boolean; learningEnabled: boolean }) => request<{ memories: CompanionMemory[] }>("/api/v1/companion/import-memories", {

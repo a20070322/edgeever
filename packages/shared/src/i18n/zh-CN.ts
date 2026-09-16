@@ -152,7 +152,39 @@ export const zhCN = {
       "failed": "生成失败 · 可能保留部分内容",
       "cancelled": "已停止",
       "interrupted": "生成中断"
-    }
+    },
+    timeline: {
+      title: "本轮操作",
+      running: "进行中",
+      error: "未完成",
+      open: "打开笔记",
+      restore: "从回收站恢复",
+      restoreRevision: "恢复上一版",
+      restored: "已恢复",
+      restoreFailed: "未能恢复。请在笔记里查看回收站或历史版本。",
+    },
+    mentions: {
+      hint: "输入 @ 钉住笔记、笔记本或标签",
+      notes: "笔记",
+      notebooks: "笔记本",
+      tags: "标签",
+      empty: "没有匹配的笔记、笔记本或标签",
+      remove: "移除 {{title}}",
+    },
+    todos: {
+      title: "任务",
+      pending: "待办",
+      inProgress: "进行中",
+      completed: "完成",
+    },
+    questions: {
+      title: "需要你选一下",
+      submit: "继续",
+      other: "其他",
+    },
+    continue: "继续未完成的工作",
+    process: "思考过程",
+    trace: "过程 · {{count}} 步",
   },
   common: {
     appName: "EdgeEver",
@@ -978,7 +1010,7 @@ export const zhCN = {
     modes: {
       instruction: "指令模式",
       ask: "Agent 模式",
-      askHint: "可以检索和整理笔记。改库前会先列出，确认后才执行。",
+      askHint: "可以检索和整理笔记。删除进回收站，改过的可从历史还原。",
       askPlaceholder: "问问你的笔记，或让 Agent 整理…",
       resumeLast: "继续上次",
     },

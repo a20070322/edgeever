@@ -2206,10 +2206,10 @@ const RichEditorPane = ({
       setTitle(nextTitle);
       setTagsText(nextTagsText);
       setMobilePlainText(nextMarkdown);
-      hydrateMarkdownSource(memo.id, nextContent, nextMarkdown);
+      const keptLiveMarkdown = hydrateMarkdownSource(memo.id, nextContent, nextMarkdown);
       setMobilePlainTextElementValue(mobileTextAreaRef.current, nextMarkdown);
 
-      if (isEditorReady(currentEditor) && shouldReplaceDocument) {
+      if (isEditorReady(currentEditor) && shouldReplaceDocument && !keptLiveMarkdown) {
         try {
           currentEditor.commands.setContent(nextContent);
         } catch (err) {
@@ -3010,7 +3010,7 @@ const RichEditorPane = ({
     setTitle(nextTitle);
     setTagsText(nextTagsText);
     setMobilePlainText(nextMarkdown);
-    hydrateMarkdownSource(remoteMemo.id, nextContent, nextMarkdown);
+    hydrateMarkdownSource(remoteMemo.id, nextContent, nextMarkdown, { force: true });
     setMobilePlainTextElementValue(mobileTextAreaRef.current, nextMarkdown);
 
     const currentEditor = editorRef.current;

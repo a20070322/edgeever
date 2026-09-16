@@ -8,12 +8,14 @@ import {
 } from "react";
 import type { Editor } from "@tiptap/react";
 import {
+  CLOSED_NOTE_SEARCH_STATE,
   createNoteSearchHighlightPlugin,
   formatNoteSearchMatchLabel,
   getNextSearchMatchIndex,
   getSearchMatchesFromDocument,
   getSearchNavigationIdentity,
   NOTE_SEARCH_HIGHLIGHT_PLUGIN_KEY,
+  shouldResetNoteSearchForMemoChange,
   type NoteSearchMatch,
 } from "./note-search";
 
@@ -56,6 +58,16 @@ export const useEditorNoteSearchController = ({
   const [noteSearchIndex, setNoteSearchIndex] = useState(0);
   const noteSearchInputRef = useRef<HTMLInputElement | null>(null);
   const automaticSelectionRef = useRef<{ editor: Editor; identity: string } | null>(null);
+  const previousMemoIdRef = useRef(memoId);
+  if (shouldResetNoteSearchForMemoChange(previousMemoIdRef.current, memoId)) {
+    previousMemoIdRef.current = memoId;
+    setNoteSearchOpen(CLOSED_NOTE_SEARCH_STATE.open);
+    setNoteSearchQuery(CLOSED_NOTE_SEARCH_STATE.query);
+    setNoteSearchReplaceOpen(CLOSED_NOTE_SEARCH_STATE.replaceOpen);
+    setNoteSearchReplacement(CLOSED_NOTE_SEARCH_STATE.replacement);
+    setNoteSearchIndex(CLOSED_NOTE_SEARCH_STATE.index);
+  }
+
   const noteSearchMatches = useMemo(
     () => getEditorSearchMatches(editor, noteSearchQuery),
     [dirtyVersion, editor, memoId, noteSearchQuery],
