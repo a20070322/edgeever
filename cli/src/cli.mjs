@@ -1,3 +1,4 @@
+import { createNotebook } from "./notebooks.mjs";
 import { manageSkills, packageVersion } from "./skills.mjs";
 import { interactiveResolve, editDraft } from "./file-workspace/interactive.mjs";
 import { resourceTransport } from "./file-workspace/http.mjs";
@@ -23,6 +24,8 @@ Usage:
   edgeever skill install|status|update --dir <skills-directory> [--force]
   edgeever profile set <name> --url <url> --token <token>
   edgeever profile list
+  edgeever --profile <name> create-notebook --name <name> [--parent <id>] [--dry-run]
+  edgeever --profile <name> create-notebook --path <a/b/c> [--parent <id>] [--parents] [--dry-run] [--retry-uncertain]
   edgeever --profile <name> notebooks
   edgeever --profile <name> tags
   edgeever --profile <name> search <query>
@@ -113,6 +116,15 @@ const main = async () => {
   }
 
   switch (command) {
+    case "create-notebook": {
+      const options = parseOptions(argv);
+      for (const key of ["name", "path", "parent"]) if (options[key] === "true") throw Error(`--${key} requires a value`);
+      const result = await createNotebook(client, { name: options.name, path: options.path, parent: options.parent, parents: options.parents === "true", dryRun: options["dry-run"] === "true", retryUncertain: options["retry-uncertain"] === "true" }, join(dirname(CONFIG_PATH), "notebook-operations"));
+      printJson(result);
+      if (result.status === "failed") process.exitCode = 1;
+      if (result.status === "uncertain") process.exitCode = 2;
+      return;
+    }
     case "notebooks":
       return printJson(await client.request("/api/v1/notebooks"));
     case "tags":

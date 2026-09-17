@@ -10,7 +10,7 @@ From this directory:
 npm ci
 npm test
 npm pack --pack-destination /tmp
-npm install -g /tmp/knowledge-workbench-edgeever-cli-0.4.0.tgz
+npm install -g /tmp/knowledge-workbench-edgeever-cli-0.6.0.tgz
 edgeever --help
 ```
 
@@ -138,3 +138,19 @@ Each text conflict saves base/local/remote snapshots and a plain-body `merge.md`
 `--use merge --edit [--editor <executable>]` opens the draft; the interactive menu can also open it. The editor option is one executable path/name, not a shell command with arguments. Defaults: macOS `open -W`, Windows Notepad, other platforms `vi`. Close the editor to return. The menu requires a TTY. The compare option shows all three snapshots. `--use local|remote` explicitly chooses an entire side and clears the pending conflict; choosing local can discard remote edits on the next sync. Resolve and sync reject unresolved marker lines (including literal marker examples, which must be indented or removed before syncing).
 
 Missing local files can be restored individually with `resolve --memo ID --use remote` after reviewing backups, then synced. Do not delete `.edgeever/state.json` or tracked files to reset paths. `link --replace-scope` intentionally preserves bindings and baselines. A `(2)` directory can reflect any occupied local path, including an old empty directory; it does not prove duplicate remote notebooks. 0.3.1+ follows notes moved between notebooks, but notebook renaming/reparenting remains outside this fix. This release adds no server changes. Preserve the workspace and `.edgeever` before rollback, and complete pending resolutions using this version: older clients do not honor its active conflict records.
+
+## Create notebooks (0.5.0)
+
+```bash
+edgeever --profile cloud create-notebook --name "260924" --parent NOTEBOOK_ID
+edgeever --profile cloud create-notebook --path "Development/260924" --parent NOTEBOOK_ID --parents --dry-run
+edgeever --profile cloud create-notebook --path "Development/260924" --parent NOTEBOOK_ID --parents
+```
+
+Requires `read:notebooks` and `write:notebooks` for creation. Without `--parent`, start at the workspace root. `--name` creates/reuses one literal name; `--path` splits on `/`. `--parents` creates missing ancestors; without it ancestors must already exist. Names are trimmed, 1–80 characters; empty/dot/control-character path segments are rejected. Matching is exact and case-sensitive within a parent. A unique existing match is reused; duplicate matches stop without guessing. Output includes each created/reused step and the final `notebookId`, suitable for `workspace import`. Dry-run makes no server changes (a temporary local operation lock is used).
+
+Creation is sequential, not a server transaction. Failures report completed steps, leaving created notebooks intact. Journals and per-server locks live in `notebook-operations/` beside the CLI config, without credentials. After a lost response, rerun only to reconcile a visible unique match; if the result is still absent, the command stops as `uncertain` (exit 2). Only after verifying the original request has finished without creating a notebook, explicitly pass `--retry-uncertain`; its previous journal is retained. Separate machines/clients can still create duplicates concurrently: this is client-side reuse, not a server uniqueness guarantee. This command does not import local files or change workspace selection.
+
+## Deleted notebook directories (0.6.0)
+
+After sync, the CLI checks managed directory IDs against the full workspace notebook list, rechecking before cleanup. A deleted notebook's empty local directory is removed with an empty-directory-only operation, deepest first. Live notebooks, excluded/out-of-scope notebooks and unmanaged directories are retained. Files (including hidden files) prevent removal and produce `directory-retained-not-empty`; no recursive deletion occurs. Local Markdown and note baselines remain protected by the existing retention rules. A directly linked notebook that disappeared produces `scope-notebook-missing` instead of aborting the whole sync. `--dry-run` reports `would-remove-directory` and accounts for planned note moves; it writes no files or mappings. `--pull-only` also performs empty-directory cleanup. This does not implement notebook rename/reparent mirroring or deleting nonempty local folders.

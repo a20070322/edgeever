@@ -613,3 +613,51 @@ test('human resolution refuses a remote notebook move even without content revis
   sqlite.run('UPDATE memos SET notebook_id=? WHERE id=?',['nb_private',memo.id]);
   await expect(resolveConflict(root,client,memo.id,'continue')).rejects.toThrow('Remote changed');
 });
+
+test('CLI notebook creation uses real API parent hierarchy, repeat reuse and write scope',async()=>{
+ const {createNotebook}=await import('../../cli/src/notebooks.mjs');
+ const opts={path:'开发迭代/260924',parent:'nb_parent',parents:true};
+ const journal=join(root,'.notebook-operations');
+ expect((await createNotebook(client,{...opts,dryRun:true},journal)).status).toBe('preview');
+ const result=await createNotebook(client,opts,journal);expect(result.status).toBe('complete');
+ const rows=(await client.request('/api/v1/notebooks')).notebooks;
+ expect(rows.find(n=>n.id===result.notebookId).parentId).toBe(result.steps[0].id);
+ expect((await createNotebook(client,opts,journal)).steps.every(s=>s.status==='reused')).toBe(true);
+ sqlite.run("UPDATE api_tokens SET scopes_json=? WHERE id='tok_test'",[JSON.stringify(['read:notebooks'])]);
+ expect((await createNotebook(client,{name:'forbidden',parent:'nb_parent'},journal)).status).toBe('failed');
+});
+
+test('deleted notebook empty directory is previewed then removed after note moves; live scope exclusions remain',async()=>{
+ const memo=await create();await link(root,client,scope);await sync(root,client);
+ const s=await state(),oldDir=s.notebookPaths.nb_child;
+ sqlite.run('UPDATE memos SET notebook_id=? WHERE id=?',['nb_private',memo.id]);
+ sqlite.run("UPDATE notebooks SET slug='child' WHERE id='nb_child'");await client.request('/api/v1/notebooks/nb_child',{method:'DELETE'});
+ const preview=await sync(root,client,{dryRun:true,pullOnly:true});
+ // Dry-run accounts for the planned note move without mutating either file or directory.
+ expect(preview.results.some(r=>r.status==='would-remove-directory')).toBe(true);
+ expect((await readdir(join(root,oldDir))).length).toBe(1);
+ const result=await sync(root,client,{pullOnly:true});
+ expect(result.results.some(r=>r.status==='directory-removed'&&r.path===oldDir)).toBe(true);
+ await expect(readdir(join(root,oldDir))).rejects.toThrow();
+ expect((await state()).notebookPaths.nb_child).toBeUndefined();
+ expect(await readFile(join(root,(await state()).entries[memo.id].path),'utf8')).toBe('原文\n');
+});
+test('cleanup removes only deleted managed empty ancestors and keeps hidden files and live directories',async()=>{
+ const {cleanupDirectories}=await import('../../cli/src/file-workspace/directories.mjs');
+ await mkdir(join(root,'old/child'),{recursive:true});await mkdir(join(root,'keep'));await rawWriteFile(join(root,'keep/.user'),'x');await mkdir(join(root,'live'));await mkdir(join(root,'unmanaged'));
+ const s={notebookPaths:{a:'old',b:'old/child',c:'keep',d:'live'}};
+ const preview=await cleanupDirectories(root,s,[{id:'d'}],true);
+ expect(preview.filter(r=>r.status==='would-remove-directory').length).toBe(2);expect(s.notebookPaths.a).toBe('old');
+ await cleanupDirectories(root,s,[{id:'d'}]);
+ await expect(readdir(join(root,'old'))).rejects.toThrow();expect(await readdir(join(root,'keep'))).toEqual(['.user']);
+ expect(await readdir(join(root,'live'))).toEqual([]);expect(await readdir(join(root,'unmanaged'))).toEqual([]);
+});
+test('deleted directly linked notebook no longer aborts sync and nonempty local copies stay',async()=>{
+ const memo=await create();await link(root,client,{...scope,include:['nb_child']});await sync(root,client);
+ const entry=(await state()).entries[memo.id];
+ sqlite.run('UPDATE memos SET is_deleted=1 WHERE id=?',[memo.id]);sqlite.run("UPDATE notebooks SET slug='child' WHERE id='nb_child'");await client.request('/api/v1/notebooks/nb_child',{method:'DELETE'});
+ const result=await sync(root,client,{pullOnly:true});
+ expect(result.results.some(r=>r.status==='scope-notebook-missing')).toBe(true);
+ expect(result.results.some(r=>r.status==='directory-retained-not-empty')).toBe(true);
+ expect(await readFile(join(root,entry.path),'utf8')).toBe('原文\n');
+});

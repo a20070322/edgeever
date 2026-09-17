@@ -1,3 +1,4 @@
+import { cleanupDirectories } from './directories.mjs';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, readdir, unlink } from 'node:fs/promises';
 import { resolve, posix } from 'node:path';
@@ -149,7 +150,8 @@ export async function sync(root, client, { dryRun = false, pullOnly = false, aut
     const moves = new Map();
     const attachments = attachmentContext(root, client, state, () => save(root,state), dryRun);
     const { notebooks } = await client.request('/api/v1/notebooks');
-    const selected = selectNotebooks(notebooks, state.scope);
+    const liveIds = new Set(notebooks.map(n => n.id));
+    const selected = selectNotebooks(notebooks, { ...state.scope, include: state.scope.include.filter(id => liveIds.has(id)), exclude: state.scope.exclude.filter(id => liveIds.has(id)) });
     const remote = await snapshot(client, selected);
     const results = [...scan.problems];
     const reserved = new Set();
@@ -272,6 +274,13 @@ export async function sync(root, client, { dryRun = false, pullOnly = false, aut
         results.push({ id, path, status: localRaw === projectedRaw ? 'clean' : dryRun ? 'would-pull' : 'pulled' });
       }
     }
+    // Recheck full membership after content synchronization before retiring directories.
+    if (Object.keys(state.notebookPaths || {}).some(id => !liveIds.has(id))) {
+      const latest = await client.request('/api/v1/notebooks');
+      results.push(...await cleanupDirectories(root, state, latest.notebooks, dryRun, new Set([...moves.values()].map(move => move.from))));
+      if (!dryRun) await save(root, state);
+    }
+    for (const id of state.scope.include.filter(id => !liveIds.has(id))) results.push({ notebookId:id, status:'scope-notebook-missing' });
     return { dryRun, results: results.map(result => {
       const move = moves.get(result.id);
       return move ? { ...result, move, status: result.status === 'clean' ? (dryRun ? 'would-move' : 'moved') : result.status } : result;

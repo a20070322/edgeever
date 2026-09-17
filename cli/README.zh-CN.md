@@ -10,7 +10,7 @@
 npm ci
 npm test
 npm pack --pack-destination /tmp
-npm install -g /tmp/knowledge-workbench-edgeever-cli-0.4.0.tgz
+npm install -g /tmp/knowledge-workbench-edgeever-cli-0.6.0.tgz
 edgeever --help
 ```
 
@@ -138,3 +138,19 @@ edgeever --profile cloud workspace sync ./资料
 `--use merge --edit [--editor <可执行文件>]` 可打开草稿，交互菜单也可打开。editor 只接受单个可执行文件路径/名称，不接受带参数的 shell 命令。默认 macOS 为 `open -W`、Windows 为记事本、其他平台为 `vi`；关闭编辑器后返回。菜单需要终端 TTY，“查看”显示三方快照。`--use local|remote` 表示明确选择一方全文并清除待处理冲突，选择 local 后同步可能舍弃远端修改。resolve 与 sync 阻止上传未清除的标记行（正文里演示标记的例子也需缩进或删除后才能同步）。
 
 本地文件缺失时，先检查备份，再用 `resolve --memo ID --use remote` 逐篇恢复并 sync。不要删除 `.edgeever/state.json` 或已跟踪文件来重置路径。`link --replace-scope` 保留映射和基线是预期行为。目录后缀 `(2)` 可能源于任意本地占用，包括旧空目录，不能说明云端存在同名笔记本。0.3.1+ 支持笔记换所属笔记本，笔记本自身改名/换父级仍不在本次范围。本版无需服务端改动。回滚前备份整个工作目录及 `.edgeever`，并先用本版完成待处理冲突；旧 CLI 不识别新增的活动冲突记录。
+
+## 创建笔记本（0.5.0）
+
+```bash
+edgeever --profile cloud create-notebook --name "260924" --parent 笔记本ID
+edgeever --profile cloud create-notebook --path "开发迭代/260924" --parent 笔记本ID --parents --dry-run
+edgeever --profile cloud create-notebook --path "开发迭代/260924" --parent 笔记本ID --parents
+```
+
+创建需要 `read:notebooks` 和 `write:notebooks`。不传 `--parent` 时从工作区根级开始。`--name` 创建或复用单个完整名称，`--path` 用 `/` 分隔层级。`--parents` 补齐缺失祖先，不带时祖先必须已存在。名称去除首尾空格后限 1–80 字符，拒绝空段、点路径和控制字符。匹配限定在同一父级，按名称精确匹配并区分大小写；唯一同名项复用，多个同名项停止。输出逐层 created/reused 和最终 `notebookId`，可交给 `workspace import`。dry-run 不修改服务器（会使用临时本地操作锁）。
+
+逐层创建不是服务端事务，失败会报告完成步骤，已创建笔记本保留。创建日志和按服务器区分的锁保存在 CLI 配置旁的 `notebook-operations/`，不保存凭据。响应丢失后重跑只会核对并复用可见的唯一同名结果；结果仍不可见时返回 uncertain（退出码 2）。只有确认原请求已结束且没有创建结果，才可显式加 `--retry-uncertain`，旧日志会保留。不同机器/客户端并发仍可能创建重名项，本功能不提供服务端唯一性保证。此命令不会导入本地文件或修改 workspace 链接范围。
+
+## 已删除笔记本的空目录清理（0.6.0）
+
+sync 后将受管目录 ID 与整个工作区的笔记本列表比较，清理前再次检查。云端已删除笔记本对应的本地空目录会按由深到浅的顺序移除，仅使用空目录删除操作。仍存在、仅被排除/移出同步范围的笔记本目录，以及非受管目录都会保留。有任何文件（包括隐藏文件）时保留并报告 `directory-retained-not-empty`，绝不递归删除。本地 Markdown 与笔记基线继续按原有规则保留。直接链接的笔记本消失时报告 `scope-notebook-missing`，不再中止整个同步。`--dry-run` 报告 `would-remove-directory`，并考虑本次计划搬走的笔记，不改文件和映射；`--pull-only` 也会清理空目录。本版不包含笔记本自身改名/换父级映射，也不删除非空本地文件夹。

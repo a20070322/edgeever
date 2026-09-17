@@ -1,6 +1,6 @@
 {
   "name": "knowledge-workbench-edgeever-cli",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "description": "Standalone Node.js CLI for EdgeEver notes and Markdown file workspaces",
   "type": "module",
   "license": "AGPL-3.0-only",
