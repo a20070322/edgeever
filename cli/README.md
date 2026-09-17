@@ -10,7 +10,7 @@ From this directory:
 npm ci
 npm test
 npm pack --pack-destination /tmp
-npm install -g /tmp/knowledge-workbench-edgeever-cli-0.2.0.tgz
+npm install -g /tmp/knowledge-workbench-edgeever-cli-0.4.0.tgz
 edgeever --help
 ```
 
@@ -36,7 +36,7 @@ Use the instance base URL, without `/mcp`. Profiles live in `~/.edgeever/config.
 
 Basic commands use the existing REST API. Workspace synchronization requires our server-side `/api/v1/file-workspace` capability with atomic revision writes and attachment synchronization; a stock official image is not assumed to provide it. Required sync scopes: `read:notebooks`, `read:memos`, `write:memos`, `read:resources`, `write:resources`.
 
-Use a different local directory for each server/workspace. Local new Markdown files are not automatically imported; deletions are not propagated; synchronization is manual. Exit codes: 0 success, 1 error, 2 reported synchronization conflicts. Run `edgeever --help` for all commands.
+Use a different local directory for each server/workspace. Local new Markdown files require explicit `workspace import`; deletions are not propagated; synchronization is manual. Exit codes: 0 success, 1 error, 2 reported synchronization conflicts. Run `edgeever --help` for all commands.
 
 ## Development and verification
 
@@ -72,3 +72,69 @@ edgeever skill install --dir /absolute/path/to/tool/skills
 `status` compares file hashes and CLI versions. `install` preserves existing installations; use `update` for an older managed copy. `update` does not install missing copies. Modified or unmanaged copies are preserved with exit code 2. Review them before using `--force` with install/update: it moves the old directory to `.edgeever-skill-backups/` alongside the skills parent directory, reports its backup path, then installs the bundled skill. Links at the destination or within a managed copy are blocked even with `--force`. Normal updates also retain a backup. Do not place backups in an agent's scanned skill directory.
 
 Skill updates use the installed CLI's bundled files, never fetch a new CLI version. The package has not been published to npm. Additional tests cover version upgrades, local modifications, unmanaged copies, backup preservation, directory selection and installer locks; the packed-package test installs all three targets into isolated temporary data roots.
+
+
+## Document IDs and readable paths (0.3.0)
+
+Tracked Markdown contains a YAML header:
+
+```markdown
+---
+edgeever:
+  memo_id: memo_example
+---
+# Note body
+```
+
+Only the managed metadata is stripped before upload. Existing user front matter is retained; `preserve_front_matter: true` may appear inside `edgeever` to preserve an original header. The `edgeever` key is reserved. New local paths use readable names; collisions are disambiguated with ` (2)` etc. IDs, not filenames, determine note identity. Renaming/moving a file within the linked workspace updates its local mapping, not remote titles/notebooks. Missing or duplicate IDs and malformed/unbound metadata are reported without guessing or overwriting notes. Moving a note repairs missing relative binary attachment links; Markdown links to other notes are not automatically rewritten.
+
+Before using an old v1/v2 workspace:
+
+```sh
+edgeever --profile cloud workspace migrate /path/to/notes --dry-run
+edgeever --profile cloud workspace migrate /path/to/notes
+edgeever --profile cloud workspace sync /path/to/notes --dry-run
+```
+
+Migration verifies instance identity but makes no server writes. Original files and state are backed up under `.edgeever/migrations/`; local edits, remote revision and content baselines are retained. Existing untracked files are not overwritten. Interrupted migrations resume with the same command, using the saved journal. Changed destinations cause a stop and preserve both copies. Keep the workspace idle while migrating. To roll back, retain the current workspace, restore backed-up original files at the paths in the backed-up state, and restore that state; do not run an older CLI on v3 state. Binary resources and upload journals remain in the workspace.
+
+To create a note from a local file while retaining its filename:
+
+```sh
+edgeever --profile cloud workspace import /path/to/notes --file 260924.md --notebook nb_id --title 'Iteration 260924'
+```
+
+Import creates the note and binds that same file. The selected notebook must be in scope. New local attachments must be added after import; existing server references or known resource mappings are allowed. A create request with an uncertain outcome is not automatically retried. Find the confirmed server note, then repeat import with `--memo memo_id`; the CLI checks full content and notebook before binding. If the server did not create a note but the outcome remains uncertain, stop and inspect the import journal rather than clearing it or blindly creating again. An interrupted saved receipt can be resumed by repeating import. New files without IDs otherwise remain untracked.
+
+No server upgrade is required for 0.3.0 when the existing file-workspace capabilities are available. This version does not add background watching or deletion propagation. Run `npm ci --prefix cli` before the repository's Bun integration tests, because the CLI now owns its YAML dependency.
+
+## Remote notebook moves (0.3.1)
+
+Sync now relocates tracked notes between CLI-managed directories when their remote notebook changes, including folders left stale by 0.3.0. Use `workspace sync <directory> --dry-run --pull-only` to preview, then `workspace sync <directory> --pull-only` to apply without uploading content. Do not delete local files or relink: `--replace-scope` retains existing bindings and cannot reset their paths.
+
+Local edits and conflict baselines survive relocation; attachment links are rebased, and occupied filenames receive a numbered suffix. Explicit local moves observed by this version and newly imported paths remain local overrides. Older overrides inside managed directories cannot always be distinguished. This fix handles notes moving between notebooks; renaming or reparenting the notebook itself is not covered.
+
+Original bytes are retained in `.edgeever/history/moves/`. A pending `.edgeever/pending-move.json` is resumed by the next sync before scanning IDs. If source/destination changed, recovery stops and preserves the journal and backup; inspect them before recovery, and do not delete state or retry with an older CLI. If rolling back the CLI, first complete recovery and back up the full folder. Windows filesystem behavior remains unverified.
+
+## Automatic and human conflict resolution (0.4.0)
+
+```bash
+edgeever --profile cloud workspace sync ./notes --auto-merge --dry-run
+edgeever --profile cloud workspace sync ./notes --auto-merge
+edgeever workspace conflicts ./notes
+# Human terminal menu (compare, draft, editor, choose a side, confirm or skip):
+edgeever --profile cloud workspace resolve ./notes --memo MEMO_ID --interactive
+# Script/editor workflow:
+edgeever --profile cloud workspace resolve ./notes --memo MEMO_ID --use merge
+# Edit the returned draft path, remove conflict markers, then:
+edgeever --profile cloud workspace resolve ./notes --memo MEMO_ID --continue
+edgeever --profile cloud workspace sync ./notes
+```
+
+`--auto-merge` opts into deterministic, line-based three-way merging using the last baseline, current local text and latest remote text. Non-overlapping/identical changes merge; conflicting changes stay pending. `--dry-run` does not modify files or baselines. `--pull-only --auto-merge` saves a successful local merge without uploading. New/modified local binaries require explicit human resolution; binary bytes are not merged. Diagrams remain read-only.
+
+Each text conflict saves base/local/remote snapshots and a plain-body `merge.md` under `.edgeever/conflicts/`. Repeated sync preserves that draft and blocks the affected note until resolved. Relative attachment links in the draft are interpreted relative to the tracked note, not the draft directory; keep those links or use the supplied remote variant when selecting an attachment. Remove `<<<<<<< LOCAL`, `||||||| BASE`, `=======`, `>>>>>>> REMOTE` markers and unwanted alternatives. Do not copy managed `edgeever` metadata into the draft. `resolve --continue` checks the original local file/attachment fingerprint and remote revision/content/notebook before installing the result; it does not upload. If inputs changed, run `--use merge` to create a fresh draft; earlier drafts remain available to copy your work from. Sync checks the remote version again at upload.
+
+`--use merge --edit [--editor <executable>]` opens the draft; the interactive menu can also open it. The editor option is one executable path/name, not a shell command with arguments. Defaults: macOS `open -W`, Windows Notepad, other platforms `vi`. Close the editor to return. The menu requires a TTY. The compare option shows all three snapshots. `--use local|remote` explicitly chooses an entire side and clears the pending conflict; choosing local can discard remote edits on the next sync. Resolve and sync reject unresolved marker lines (including literal marker examples, which must be indented or removed before syncing).
+
+Missing local files can be restored individually with `resolve --memo ID --use remote` after reviewing backups, then synced. Do not delete `.edgeever/state.json` or tracked files to reset paths. `link --replace-scope` intentionally preserves bindings and baselines. A `(2)` directory can reflect any occupied local path, including an old empty directory; it does not prove duplicate remote notebooks. 0.3.1+ follows notes moved between notebooks, but notebook renaming/reparenting remains outside this fix. This release adds no server changes. Preserve the workspace and `.edgeever` before rollback, and complete pending resolutions using this version: older clients do not honor its active conflict records.

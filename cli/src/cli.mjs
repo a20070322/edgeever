@@ -1,6 +1,7 @@
 import { manageSkills, packageVersion } from "./skills.mjs";
+import { interactiveResolve, editDraft } from "./file-workspace/interactive.mjs";
 import { resourceTransport } from "./file-workspace/http.mjs";
-import { link as linkWorkspace, status as workspaceStatus, sync as syncWorkspace, resolveConflict, uploads, retryUpload } from "./file-workspace/core.mjs";
+import { link as linkWorkspace, status as workspaceStatus, sync as syncWorkspace, resolveConflict, conflicts, uploads, retryUpload, migrate, importFile } from "./file-workspace/core.mjs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -37,11 +38,16 @@ File workspace (server must support /api/v1/file-workspace):
   edgeever workspace link <directory> --notebooks id1,id2 [--exclude id3] [--shallow]
   edgeever workspace link <directory> --all [--exclude id3]
   edgeever workspace link <directory> --notebooks id1 --replace-scope
+  edgeever workspace migrate <directory> [--dry-run]
+  edgeever workspace import <directory> --file <path> --notebook <id> [--title <title>] [--memo <confirmed-id>]
   edgeever workspace uploads <directory>
   edgeever workspace retry-upload <directory> --key <key>
-  edgeever workspace resolve <directory> --memo <id> --use local|remote
+  edgeever workspace resolve <directory> --memo <id> --use local|remote|merge
+  edgeever workspace resolve <directory> --memo <id> --continue
+  edgeever workspace resolve <directory> --memo <id> --interactive [--editor <executable>]
+  edgeever workspace conflicts <directory>
   edgeever workspace status <directory>
-  edgeever workspace sync <directory> [--dry-run] [--pull-only]
+  edgeever workspace sync <directory> [--dry-run] [--pull-only] [--auto-merge]
 
 Env fallback:
   EDGEEVER_URL=http://127.0.0.1:8787
@@ -66,6 +72,7 @@ const main = async () => {
     return handleProfileCommand(argv);
   }
 
+  if (command === "workspace" && argv[0] === "conflicts") return printJson(await conflicts(argv[1] || "."));
   if (command === "workspace" && argv[0] === "uploads") return printJson(await uploads(argv[1] || "."));
   if (command === "workspace" && argv[0] === "status") {
     return printJson(await workspaceStatus(argv[1] || "."));
@@ -83,15 +90,26 @@ const main = async () => {
         recursive: options.shallow !== "true",
       }, options["replace-scope"] === "true"));
     }
+    if (action === "migrate") return printJson(await migrate(directory, client, { dryRun: options["dry-run"] === "true" }));
+    if (action === "import") return printJson(await importFile(directory, client, { file: options.file, notebookId: options.notebook, title: options.title, memoId: options.memo }));
     if (action === "retry-upload") return printJson(await retryUpload(directory,client,requireValue(options.key,"--key")));
-    if (action === "resolve") return printJson(await resolveConflict(directory, client, requireValue(options.memo, "--memo"), options.use));
-    if (action === "sync") {
-      const result = await syncWorkspace(directory, client, { dryRun: options["dry-run"] === "true", pullOnly: options["pull-only"] === "true" });
+    if (action === "resolve") {
+      const id = requireValue(options.memo, "--memo");
+      if ([options.use, options.continue === "true", options.interactive === "true"].filter(Boolean).length !== 1) throw Error("Choose exactly one: --use local|remote|merge, --continue or --interactive");
+      if (options.interactive === "true") return printJson(await interactiveResolve(directory, client, id, options.editor));
+      if (options.edit === "true" && options.use !== "merge") throw Error("--edit requires --use merge");
+      const result = await resolveConflict(directory, client, id, options.continue === "true" ? "continue" : options.use);
       printJson(result);
-      if (result.results.some(item => ["conflict", "diagram-read-only", "path-occupied", "local-changed-during-sync", "missing-local"].includes(item.status))) process.exitCode = 2;
+      if (options.edit === "true") await editDraft(directory, result.draft, options.editor);
       return;
     }
-    throw new Error("Unknown workspace command: use link, status, sync or resolve");
+    if (action === "sync") {
+      const result = await syncWorkspace(directory, client, { dryRun: options["dry-run"] === "true", pullOnly: options["pull-only"] === "true", autoMerge: options["auto-merge"] === "true" });
+      printJson(result);
+      if (result.results.some(item => ["unresolved-markers", "conflict", "diagram-read-only", "path-occupied", "local-changed-during-sync", "missing-local", "attachment-error", "duplicate-id", "unbound-id", "identity-mismatch", "metadata-error"].includes(item.status))) process.exitCode = 2;
+      return;
+    }
+    throw new Error("Unknown workspace command: use link, status, sync, migrate, import, resolve, uploads or retry-upload");
   }
 
   switch (command) {

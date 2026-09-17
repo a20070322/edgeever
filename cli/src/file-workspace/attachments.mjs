@@ -101,7 +101,7 @@ export function attachmentContext(root, client, state, persist, dryRun = false) 
       const remote=remoteResource(ref.url,client.baseUrl); if(remote) continue;
       const local=localReference(ref.url,notePath); if(!local) continue;
       const value=await bytes(local.path), checksum=hash(value);
-      const mapped=state.resources[hash(`${local.path}\0${checksum}`)];
+      const mapped=state.resources[hash(`${local.path}\0${checksum}`)] ?? Object.values(state.resources).find(r=>r.memoId===memoId && r.sha256===checksum);
       plan.push({ ...ref, ...local, value, checksum, mapped });
     }
     const converted=new Map(); let pending=0;
@@ -139,4 +139,23 @@ export function attachmentContext(root, client, state, persist, dryRun = false) 
     return { content,pending };
   }
   return { project,prepare };
+}
+
+// Keep attachment targets stable when the CLI changes a note's directory.
+// For an external move, only repair links that no longer resolve at the new path.
+export async function relocateAttachments(root, body, from, to, onlyMissing = false) {
+  if (posix.dirname(from) === posix.dirname(to)) return body;
+  return transform(body, async url => {
+    if (/^\/api\/v1\/resources\//.test(url)) return url;
+    const old = localReference(url, from); if (!old) return url;
+    await safePath(root, old.path);
+    if (onlyMissing) {
+      const next = localReference(url, to);
+      try { await stat(await safePath(root, next.path)); return url; }
+      catch (e) { if (e.code !== 'ENOENT' && e.message !== 'Path escapes workspace') throw e; }
+      try { await stat(await safePath(root, old.path)); }
+      catch (e) { if (e.code === 'ENOENT') return url; throw e; }
+    }
+    return posix.relative(posix.dirname(to), old.path).split('/').map(encodeURIComponent).join('/') + old.fragment;
+  });
 }
